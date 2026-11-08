@@ -39,12 +39,12 @@ jobs:
           flutter --version
           echo "===== 仓库根目录 ====="
           ls -la
-          echo "===== main.dart 行数 ====="
-          wc -l lib/main.dart
           if [ ! -f lib/main.dart ]; then
             echo "::error::缺少 lib/main.dart"
             exit 1
           fi
+          echo "===== main.dart 行数 ====="
+          wc -l lib/main.dart
           if ! grep -q "ANIMEFLOW_EOF" lib/main.dart; then
             echo "::error::main.dart 缺少结束标记 ANIMEFLOW_EOF，说明复制被截断，请重新上传完整文件"
             tail -n 5 lib/main.dart
@@ -137,13 +137,8 @@ jobs:
             exit 0
           fi
 
-          cat > "$PROPS" <<EOF
-distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=file\\:$TARGET
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
-EOF
+          printf '%s\n' 'distributionBase=GRADLE_USER_HOME' 'distributionPath=wrapper/dists' "distributionUrl=file\\:$TARGET" 'zipStoreBase=GRADLE_USER_HOME' 'zipStorePath=wrapper/dists' > "$PROPS"
+
           echo "===== 修改后配置 ====="
           cat "$PROPS"
           rm -rf "$HOME/.gradle/wrapper/dists" || true
