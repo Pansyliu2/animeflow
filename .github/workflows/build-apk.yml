@@ -7,8 +7,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 关键：不能再用 ubuntu-latest（已升级到 26.04，Flet 的 Python 运行时跑不起来）
+    # 固定为 22.04，它的 glibc 版本与 Flet 打包的 Python 3.12.6 兼容
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
+
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
@@ -19,7 +22,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安装 Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -36,15 +39,60 @@ jobs:
           python -m pip install --upgrade pip
           pip install flet==0.25.2
 
+      - name: 打印环境信息
+        run: |
+          echo "===== 系统版本 ====="
+          cat /etc/os-release | head -n 4
+          echo "===== glibc 版本 ====="
+          ldd --version | head -n 1
+          echo "===== python ====="
+          python --version
+          echo "===== java ====="
+          java -version
+          echo "===== flutter ====="
+          flutter --version
+          echo "===== flet ====="
+          flet --version
+
       - name: 接受 Android 协议
-        run: yes | flutter doctor --android-licenses || true
+        run: |
+          yes | flutter doctor --android-licenses || true
+          flutter doctor -v || true
+
+      - name: 检查项目文件
+        run: |
+          echo "===== 当前目录 ====="
+          pwd
+          ls -la
+          echo "===== pyproject.toml ====="
+          cat pyproject.toml || echo "缺少 pyproject.toml"
+          echo "===== main.py 前 5 行 ====="
+          head -n 5 main.py || echo "缺少 main.py"
+          echo "===== requirements.txt ====="
+          cat requirements.txt || echo "缺少 requirements.txt"
 
       - name: 编译 APK
-        run: flet build apk --arch arm64-v8a --verbose
+        run: |
+          flet build apk --arch arm64-v8a --verbose
+
+      - name: 列出产物
+        if: always()
+        run: |
+          echo "===== build/apk ====="
+          ls -la build/apk || echo "没有 build/apk 目录"
 
       - name: 上传 APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: AnimeFlow-APK
           path: build/apk/*.apk
           if-no-files-found: error
+
+      - name: 失败时上传构建目录
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build/
+          if-no-files-found: warn
