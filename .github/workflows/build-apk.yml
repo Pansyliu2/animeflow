@@ -37,22 +37,31 @@ jobs:
           set -e
           echo "===== flutter ====="
           flutter --version
-          echo "===== java ====="
-          java -version
           echo "===== 仓库根目录 ====="
           ls -la
-          echo "===== lib 目录 ====="
-          ls -la lib || true
-          echo "===== main.dart 前 10 行 ====="
-          head -n 10 lib/main.dart || true
           echo "===== main.dart 行数 ====="
-          wc -l lib/main.dart || true
+          wc -l lib/main.dart
           if [ ! -f lib/main.dart ]; then
-            echo "::error::仓库根目录缺少 lib/main.dart，请先上传这个文件"
+            echo "::error::缺少 lib/main.dart"
+            exit 1
+          fi
+          if ! grep -q "ANIMEFLOW_EOF" lib/main.dart; then
+            echo "::error::main.dart 缺少结束标记 ANIMEFLOW_EOF，说明复制被截断，请重新上传完整文件"
+            tail -n 5 lib/main.dart
             exit 1
           fi
           if [ "$(wc -l < lib/main.dart)" -lt 300 ]; then
-            echo "::error::lib/main.dart 行数过少（少于 300 行），可能复制不完整，请重新上传"
+            echo "::error::main.dart 行数少于 300，内容不完整"
+            exit 1
+          fi
+          echo "===== pubspec.yaml ====="
+          cat pubspec.yaml
+          if ! grep -q "url_launcher" pubspec.yaml; then
+            echo "::error::pubspec.yaml 缺少 url_launcher 依赖"
+            exit 1
+          fi
+          if ! grep -q "uses-material-design" pubspec.yaml; then
+            echo "::error::pubspec.yaml 缺少 flutter 段"
             exit 1
           fi
 
@@ -61,68 +70,37 @@ jobs:
           set -e
           flutter create --org com.animeflow --project-name animeflow --platforms=android build_src
           cp lib/main.dart build_src/lib/main.dart
-          cat > build_src/pubspec.yaml <<'PUBSPEC_EOF'
-          name: animeflow
-          description: AnimeFlow - 番剧元数据聚合客户端
-          publish_to: "none"
-          version: 1.0.0+1
-
-          environment:
-            sdk: ">=3.4.0 <4.0.0"
-
-          dependencies:
-            flutter:
-              sdk: flutter
-            http: ^1.2.2
-            url_launcher: ^6.3.0
-
-          dev_dependencies:
-            flutter_test:
-              sdk: flutter
-            flutter_lints: ^4.0.0
-
-          flutter:
-            uses-material-design: true
-          PUBSPEC_EOF
-          echo "===== 生成的 pubspec.yaml ====="
+          cp pubspec.yaml build_src/pubspec.yaml
+          echo "===== build_src 结构 ====="
+          ls -la build_src
+          echo "===== 复制后的 pubspec.yaml ====="
           cat build_src/pubspec.yaml
 
       - name: 注入网络权限和应用名
         working-directory: build_src
         run: |
           set -e
-          python3 - <<'PY'
-          from pathlib import Path
+          sed -i 's|<application|<uses-permission android:name="android.permission.INTERNET"/>\n    <application|' android/app/src/main/AndroidManifest.xml
+          sed -i 's|android:label="animeflow"|android:label="AnimeFlow"|' android/app/src/main/AndroidManifest.xml
+          echo "===== manifest 关键行 ====="
+          grep -n "INTERNET" android/app/src/main/AndroidManifest.xml || echo "未找到 INTERNET"
+          grep -n "android:label" android/app/src/main/AndroidManifest.xml || echo "未找到 label"
 
-          manifest = Path("android/app/src/main/AndroidManifest.xml")
-          text = manifest.read_text(encoding="utf-8")
-          permission = '<uses-permission android:name="android.permission.INTERNET"/>'
-          if permission not in text:
-              text = text.replace("<application", permission + "\n    <application", 1)
-          text = text.replace('android:label="animeflow"', 'android:label="AnimeFlow"')
-          manifest.write_text(text, encoding="utf-8")
-          print("===== AndroidManifest.xml =====")
-          print(manifest.read_text(encoding="utf-8"))
-          PY
-
-      - name: 预下载 Gradle（绕开 GitHub 504）
+      - name: 预下载 Gradle 并改为本地源
         working-directory: build_src
         run: |
           set -euo pipefail
           PROPS="android/gradle/wrapper/gradle-wrapper.properties"
-          echo "===== 原始 gradle-wrapper.properties ====="
+          echo "===== 原始配置 ====="
           cat "$PROPS"
 
           VER=$(sed -nE 's/.*gradle-([0-9]+(\.[0-9]+)+)-(all|bin)\.zip.*/\1/p' "$PROPS" | head -n1)
           if [ -z "$VER" ]; then
             VER="8.3"
           fi
-          echo "识别到的 Gradle 版本: $VER"
+          echo "Gradle 版本: $VER"
 
-          DIST_DIR="$RUNNER_TEMP/gradle-dist"
-          mkdir -p "$DIST_DIR"
-          TARGET="$DIST_DIR/gradle-$VER-all.zip"
-
+          TARGET="$RUNNER_TEMP/gradle-$VER-all.zip"
           URLS=(
             "https://downloads.gradle.org/distributions/gradle-$VER-all.zip"
             "https://services.gradle.org/distributions/gradle-$VER-all.zip"
@@ -136,7 +114,7 @@ jobs:
               break
             fi
             for ATTEMPT in 1 2 3; do
-              echo "下载尝试 $ATTEMPT/3: $U"
+              echo "尝试 $ATTEMPT/3: $U"
               if curl -fSL --connect-timeout 30 --max-time 1800 --retry 2 --retry-delay 5 -o "$TARGET.part" "$U"; then
                 mv "$TARGET.part" "$TARGET"
                 OK=1
@@ -147,4 +125,80 @@ jobs:
           done
 
           if [ "$OK" != "1" ]; then
-            echo "::warning::所有源都未能下载 Gradle，交给 wrap
+            echo "::warning::所有镜像都没下到，交给 wrapper 自己重试"
+            exit 0
+          fi
+
+          SIZE=$(stat -c%s "$TARGET")
+          echo "下载完成，大小 $SIZE 字节"
+          if [ "$SIZE" -lt 52428800 ]; then
+            echo "::warning::文件太小，判定为错误页，删除"
+            rm -f "$TARGET"
+            exit 0
+          fi
+
+          cat > "$PROPS" <<EOF
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=file\\:$TARGET
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+EOF
+          echo "===== 修改后配置 ====="
+          cat "$PROPS"
+          rm -rf "$HOME/.gradle/wrapper/dists" || true
+
+      - name: 拉取 Dart 依赖
+        working-directory: build_src
+        run: |
+          flutter pub get
+          flutter pub deps --style=compact || true
+
+      - name: 编译 APK（失败自动重试一次）
+        working-directory: build_src
+        run: |
+          set -o pipefail
+          TARGETS="--target-platform android-arm,android-arm64"
+
+          echo "===== 第 1 次构建 ====="
+          if flutter build apk --release $TARGETS 2>&1 | tee build_1.log; then
+            echo "第 1 次构建成功"
+            exit 0
+          fi
+
+          echo "::warning::第 1 次失败，清理后重试"
+          flutter clean || true
+          flutter pub get || true
+          rm -rf "$HOME/.gradle/caches/modules-2" || true
+
+          echo "===== 第 2 次构建 ====="
+          if flutter build apk --release $TARGETS 2>&1 | tee build_2.log; then
+            echo "第 2 次构建成功"
+            exit 0
+          fi
+
+          echo "::error::两次构建都失败，请看 build_1.log / build_2.log"
+          exit 1
+
+      - name: 列出产物
+        if: always()
+        run: |
+          ls -la build_src/build/app/outputs/flutter-apk || echo "没有产物目录"
+
+      - name: 上传 APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnimeFlow-APK
+          path: build_src/build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: warn
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            build_src/build_1.log
+            build_src/build_2.log
+          if-no-files-found: ignore
