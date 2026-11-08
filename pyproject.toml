@@ -1,0 +1,18 @@
+[project]
+name = "animeflow"
+version = "1.0.0"
+description = "番剧元数据聚合客户端"
+requires-python = ">=3.10"
+dependencies = [
+    "flet==0.25.2",
+    "requests>=2.31.0",
+]
+
+[tool.flet]
+org = "com.animeflow"
+product = "AnimeFlow"
+company = "AnimeFlow"
+copyright = "Copyright (c) 2026 AnimeFlow"
+
+[tool.flet.app]
+path = "."
