@@ -1,18 +1,21 @@
-[project]
-name = "animeflow"
-version = "1.0.0"
-description = "番剧元数据聚合客户端"
-requires-python = ">=3.10"
-dependencies = [
-    "flet==0.25.2",
-    "requests>=2.31.0",
-]
+name: animeflow
+description: AnimeFlow - 番剧元数据聚合客户端
+publish_to: "none"
+version: 1.0.0+1
 
-[tool.flet]
-org = "com.animeflow"
-product = "AnimeFlow"
-company = "AnimeFlow"
-copyright = "Copyright (c) 2026 AnimeFlow"
+environment:
+  sdk: ">=3.4.0 <4.0.0"
 
-[tool.flet.app]
-path = "."
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  url_launcher: ^6.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
