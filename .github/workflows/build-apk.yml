@@ -5,10 +5,15 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx3g"
 
     steps:
       - name: 拉取代码
@@ -27,25 +32,65 @@ jobs:
           channel: stable
           cache: true
 
-      - name: 环境检查
+      - name: 环境与文件检查
         run: |
+          set -e
+          echo "===== flutter ====="
           flutter --version
+          echo "===== java ====="
           java -version
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          flutter doctor -v || true
+          echo "===== 仓库根目录 ====="
+          ls -la
+          echo "===== lib 目录 ====="
+          ls -la lib || true
+          echo "===== main.dart 前 10 行 ====="
+          head -n 10 lib/main.dart || true
+          echo "===== main.dart 行数 ====="
+          wc -l lib/main.dart || true
+          if [ ! -f lib/main.dart ]; then
+            echo "::error::仓库根目录缺少 lib/main.dart，请先上传这个文件"
+            exit 1
+          fi
+          if [ "$(wc -l < lib/main.dart)" -lt 300 ]; then
+            echo "::error::lib/main.dart 行数过少（少于 300 行），可能复制不完整，请重新上传"
+            exit 1
+          fi
 
       - name: 生成 Android 工程骨架
         run: |
+          set -e
           flutter create --org com.animeflow --project-name animeflow --platforms=android build_src
           cp lib/main.dart build_src/lib/main.dart
-          cp pubspec.yaml build_src/pubspec.yaml
-          echo "===== 骨架生成完成 ====="
-          ls -la build_src
-          ls -la build_src/lib
+          cat > build_src/pubspec.yaml <<'PUBSPEC_EOF'
+          name: animeflow
+          description: AnimeFlow - 番剧元数据聚合客户端
+          publish_to: "none"
+          version: 1.0.0+1
+
+          environment:
+            sdk: ">=3.4.0 <4.0.0"
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            http: ^1.2.2
+            url_launcher: ^6.3.0
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+            flutter_lints: ^4.0.0
+
+          flutter:
+            uses-material-design: true
+          PUBSPEC_EOF
+          echo "===== 生成的 pubspec.yaml ====="
+          cat build_src/pubspec.yaml
 
       - name: 注入网络权限和应用名
         working-directory: build_src
         run: |
+          set -e
           python3 - <<'PY'
           from pathlib import Path
 
@@ -56,30 +101,50 @@ jobs:
               text = text.replace("<application", permission + "\n    <application", 1)
           text = text.replace('android:label="animeflow"', 'android:label="AnimeFlow"')
           manifest.write_text(text, encoding="utf-8")
+          print("===== AndroidManifest.xml =====")
           print(manifest.read_text(encoding="utf-8"))
           PY
 
-      - name: 拉取 Dart 依赖
+      - name: 预下载 Gradle（绕开 GitHub 504）
         working-directory: build_src
         run: |
-          flutter pub get
-          echo "===== 依赖清单 ====="
-          flutter pub deps --style=compact || true
+          set -euo pipefail
+          PROPS="android/gradle/wrapper/gradle-wrapper.properties"
+          echo "===== 原始 gradle-wrapper.properties ====="
+          cat "$PROPS"
 
-      - name: 编译 APK
-        working-directory: build_src
-        run: flutter build apk --release --target-platform android-arm64
+          VER=$(sed -nE 's/.*gradle-([0-9]+(\.[0-9]+)+)-(all|bin)\.zip.*/\1/p' "$PROPS" | head -n1)
+          if [ -z "$VER" ]; then
+            VER="8.3"
+          fi
+          echo "识别到的 Gradle 版本: $VER"
 
-      - name: 检查产物
-        if: always()
-        run: |
-          echo "===== 产物目录 ====="
-          ls -la build_src/build/app/outputs/flutter-apk || echo "没有产物目录"
+          DIST_DIR="$RUNNER_TEMP/gradle-dist"
+          mkdir -p "$DIST_DIR"
+          TARGET="$DIST_DIR/gradle-$VER-all.zip"
 
-      - name: 上传 APK
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: AnimeFlow-APK
-          path: build_src/build/app/outputs/flutter-apk/*.apk
-          if-no-files-found: warn
+          URLS=(
+            "https://downloads.gradle.org/distributions/gradle-$VER-all.zip"
+            "https://services.gradle.org/distributions/gradle-$VER-all.zip"
+            "https://mirrors.cloud.tencent.com/gradle/gradle-$VER-all.zip"
+            "https://mirrors.huaweicloud.com/gradle/gradle-$VER-all.zip"
+          )
+
+          OK=0
+          for U in "${URLS[@]}"; do
+            if [ "$OK" = "1" ]; then
+              break
+            fi
+            for ATTEMPT in 1 2 3; do
+              echo "下载尝试 $ATTEMPT/3: $U"
+              if curl -fSL --connect-timeout 30 --max-time 1800 --retry 2 --retry-delay 5 -o "$TARGET.part" "$U"; then
+                mv "$TARGET.part" "$TARGET"
+                OK=1
+                break
+              fi
+              sleep 8
+            done
+          done
+
+          if [ "$OK" != "1" ]; then
+            echo "::warning::所有源都未能下载 Gradle，交给 wrap
